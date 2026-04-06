@@ -1,0 +1,9 @@
+# Core machine learning stack
+pandas>=2.2
+scikit-learn>=1.8
+matplotlib>=3.10
+joblib>=1.5
+
+# Notebook support
+notebook>=7.0
+ipykernel>=6.29
