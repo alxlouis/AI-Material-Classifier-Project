@@ -7,3 +7,6 @@ joblib>=1.5
 # Notebook support
 notebook>=7.0
 ipykernel>=6.29
+
+# Simple web app
+streamlit>=1.45

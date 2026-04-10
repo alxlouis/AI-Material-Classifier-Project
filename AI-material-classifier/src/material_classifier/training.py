@@ -32,11 +32,12 @@ from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .dataset import CLASS_LABELS, DEFAULT_DATA_PATH, load_dataset
+from .dataset import DEFAULT_DATASET_NAME, DEFAULT_DATA_PATH, get_dataset_config, load_dataset, resolve_dataset_path
 
 DEFAULT_MODEL_PATH = MODELS_DIR / "best_model.joblib"
 DEFAULT_METRICS_PATH = MODELS_DIR / "metrics.json"
 DEFAULT_COMPARISON_PATH = MODELS_DIR / "model_comparison.csv"
+DEFAULT_COMPARISON_PLOT_PATH = MODELS_DIR / "model_comparison.png"
 DEFAULT_CONFUSION_MATRIX_PATH = MODELS_DIR / "confusion_matrix.png"
 DEFAULT_FEATURE_IMPORTANCE_PATH = MODELS_DIR / "feature_importance.png"
 
@@ -93,17 +94,55 @@ def evaluate_candidate_models(features: pd.DataFrame, labels: pd.Series) -> pd.D
         rows.append(
             {
                 "model": model_name,
-                "cv_accuracy_mean": float(scores["test_accuracy"].mean()),
-                "cv_accuracy_std": float(scores["test_accuracy"].std()),
-                "cv_f1_macro_mean": float(scores["test_f1_macro"].mean()),
-                "cv_f1_macro_std": float(scores["test_f1_macro"].std()),
+                "accuracy": float(scores["test_accuracy"].mean()),
+                "macro_f1": float(scores["test_f1_macro"].mean()),
             }
         )
 
     comparison = pd.DataFrame(rows)
     return comparison.sort_values(
-        by=["cv_f1_macro_mean", "cv_accuracy_mean"], ascending=False
+        by=["macro_f1", "accuracy"], ascending=False
     ).reset_index(drop=True)
+
+
+def save_model_comparison_plot(comparison: pd.DataFrame, output_path: str | Path) -> None:
+    """Save a bar chart comparing model accuracy and macro F1."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_frame = comparison.copy()
+    positions = range(len(plot_frame))
+    bar_width = 0.35
+
+    # Plot both metrics side by side so the models are easy to compare.
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.bar(
+        [position - bar_width / 2 for position in positions],
+        plot_frame["accuracy"],
+        width=bar_width,
+        label="Accuracy",
+        color="#4C72B0",
+    )
+    axis.bar(
+        [position + bar_width / 2 for position in positions],
+        plot_frame["macro_f1"],
+        width=bar_width,
+        label="Macro F1",
+        color="#55A868",
+    )
+
+    # Format the axis labels so the chart stays beginner-friendly and readable.
+    axis.set_title("Model Comparison")
+    axis.set_xlabel("Model")
+    axis.set_ylabel("Score")
+    axis.set_xticks(list(positions))
+    axis.set_xticklabels(plot_frame["model"])
+    axis.set_ylim(0, 1.0)
+    axis.legend()
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=200)
+    plt.close(figure)
 
 
 def save_feature_importance_plot(
@@ -138,10 +177,12 @@ def save_feature_importance_plot(
 
 
 def train_and_save_model(
-    dataset_path: str | Path = DEFAULT_DATA_PATH,
+    dataset_name: str = DEFAULT_DATASET_NAME,
+    dataset_path: str | Path | None = None,
     model_path: str | Path = DEFAULT_MODEL_PATH,
     metrics_path: str | Path = DEFAULT_METRICS_PATH,
     comparison_path: str | Path = DEFAULT_COMPARISON_PATH,
+    comparison_plot_path: str | Path = DEFAULT_COMPARISON_PLOT_PATH,
     confusion_matrix_path: str | Path = DEFAULT_CONFUSION_MATRIX_PATH,
     feature_importance_path: str | Path = DEFAULT_FEATURE_IMPORTANCE_PATH,
 ) -> dict[str, Any]:
@@ -149,17 +190,24 @@ def train_and_save_model(
     model_path = Path(model_path)
     metrics_path = Path(metrics_path)
     comparison_path = Path(comparison_path)
+    comparison_plot_path = Path(comparison_plot_path)
     confusion_matrix_path = Path(confusion_matrix_path)
     feature_importance_path = Path(feature_importance_path)
+    resolved_dataset_path = resolve_dataset_path(dataset_name, dataset_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     comparison_path.parent.mkdir(parents=True, exist_ok=True)
+    comparison_plot_path.parent.mkdir(parents=True, exist_ok=True)
     confusion_matrix_path.parent.mkdir(parents=True, exist_ok=True)
     feature_importance_path.parent.mkdir(parents=True, exist_ok=True)
 
-    features, labels, feature_names, _class_names = load_dataset(dataset_path)
-    class_ids = sorted(labels.unique())
-    class_labels = {class_id: CLASS_LABELS.get(class_id, f"type_{class_id}") for class_id in class_ids}
+    dataset_config = get_dataset_config(dataset_name)
+    features, labels, feature_names, _class_names = load_dataset(dataset_name=dataset_name, csv_path=resolved_dataset_path)
+    class_ids = sorted(labels.unique(), key=lambda value: str(value))
+    if dataset_config.class_labels is None:
+        class_labels = {class_id: str(class_id) for class_id in class_ids}
+    else:
+        class_labels = {class_id: dataset_config.class_labels.get(class_id, str(class_id)) for class_id in class_ids}
 
     features_train, features_test, labels_train, labels_test = train_test_split(
         features,
@@ -170,7 +218,9 @@ def train_and_save_model(
     )
 
     comparison = evaluate_candidate_models(features_train, labels_train)
+    # Save the comparison table so the scores can be reused outside the code.
     comparison.to_csv(comparison_path, index=False)
+    save_model_comparison_plot(comparison, comparison_plot_path)
     best_model_name = str(comparison.iloc[0]["model"])
 
     candidate_models = build_candidate_models()
@@ -203,19 +253,22 @@ def train_and_save_model(
         "model": best_model,
         "feature_names": feature_names,
         "class_labels": class_labels,
-        "dataset_path": str(Path(dataset_path)),
+        "dataset_name": dataset_name,
+        "dataset_path": str(resolved_dataset_path),
         "test_metrics": {"accuracy": accuracy, "macro_f1": macro_f1},
     }
     dump(bundle, model_path)
 
     metrics = {
         "best_model_name": best_model_name,
+        "dataset_name": dataset_name,
         "test_metrics": {"accuracy": accuracy, "macro_f1": macro_f1},
         "classification_report": _to_serializable(report),
         "class_labels": class_labels,
         "artifacts": {
             "model_path": str(model_path),
             "comparison_path": str(comparison_path),
+            "comparison_plot_path": str(comparison_plot_path),
             "confusion_matrix_path": str(confusion_matrix_path),
             "feature_importance_path": str(feature_importance_path),
         },
@@ -224,11 +277,13 @@ def train_and_save_model(
 
     return {
         "best_model_name": best_model_name,
+        "dataset_name": dataset_name,
         "test_accuracy": accuracy,
         "test_macro_f1": macro_f1,
         "model_path": str(model_path),
         "metrics_path": str(metrics_path),
         "comparison_path": str(comparison_path),
+        "comparison_plot_path": str(comparison_plot_path),
         "confusion_matrix_path": str(confusion_matrix_path),
         "feature_importance_path": str(feature_importance_path),
     }
@@ -263,7 +318,7 @@ def predict_from_dataframe(input_frame: pd.DataFrame, bundle: dict[str, Any]) ->
     predictions = pd.DataFrame(
         {
             "predicted_type_id": predicted_ids,
-            "predicted_type_name": [class_labels.get(int(class_id), f"type_{class_id}") for class_id in predicted_ids],
+            "predicted_type_name": [class_labels.get(class_id, str(class_id)) for class_id in predicted_ids],
         }
     )
 

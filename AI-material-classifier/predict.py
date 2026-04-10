@@ -13,7 +13,7 @@ def main() -> None:
     parser.add_argument(
         "--input",
         required=True,
-        help="Path to a CSV file containing the feature columns RI, Na, Mg, Al, Si, K, Ca, Ba, Fe.",
+        help="Path to a CSV file containing the feature columns expected by the saved model.",
     )
     parser.add_argument(
         "--model",
